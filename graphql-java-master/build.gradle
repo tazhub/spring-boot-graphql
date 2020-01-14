@@ -1,0 +1,223 @@
+import java.text.SimpleDateFormat
+
+plugins {
+    id "com.jfrog.bintray" version "1.8.4"
+}
+
+apply plugin: 'java'
+apply plugin: 'maven'
+apply plugin: 'maven-publish'
+apply plugin: 'antlr'
+apply plugin: 'osgi'
+
+def getDevelopmentVersion() {
+    def output = new StringBuilder()
+    def error = new StringBuilder()
+    def gitShortHash = ["git", "-C", projectDir.toString(), "rev-parse", "--short", "HEAD"].execute()
+    gitShortHash.waitForProcessOutput(output, error)
+    def gitHash = output.toString().trim()
+    if (gitHash.isEmpty()) {
+        println "git hash is empty: error: ${error.toString()}"
+        throw new IllegalStateException("git hash could not be determined")
+    }
+    def version = new SimpleDateFormat('yyyy-MM-dd\'T\'HH-mm-ss').format(new Date()) + "-" + gitHash
+    println "created development version: $version"
+    version
+}
+
+
+sourceCompatibility = 1.8
+targetCompatibility = 1.8
+def reactiveStreamsVersion = '1.0.2'
+def slf4jVersion = '1.7.25'
+def releaseVersion = System.env.RELEASE_VERSION
+version = releaseVersion ? releaseVersion : getDevelopmentVersion()
+group = 'com.graphql-java'
+
+
+repositories {
+    mavenCentral()
+    mavenLocal()
+}
+
+apply plugin: 'groovy'
+
+jar {
+    from "LICENSE.md"
+    from "src/main/antlr/Graphql.g4"
+    from "src/main/antlr/GraphqlOperation.g4"
+    from "src/main/antlr/GraphqlSDL.g4"
+    from "src/main/antlr/GraphqlCommon.g4"
+}
+
+dependencies {
+    compile 'org.antlr:antlr4-runtime:4.7.2'
+    compile 'org.slf4j:slf4j-api:' + slf4jVersion
+    compile 'com.graphql-java:java-dataloader:2.2.3'
+    compile 'org.reactivestreams:reactive-streams:' + reactiveStreamsVersion
+    antlr "org.antlr:antlr4:4.7.2"
+    testCompile group: 'junit', name: 'junit', version: '4.12'
+    testCompile 'org.spockframework:spock-core:1.1-groovy-2.4'
+    testCompile 'org.codehaus.groovy:groovy-all:2.4.13'
+    testCompile 'cglib:cglib-nodep:3.3.0'
+    testCompile 'org.objenesis:objenesis:2.1'
+    testCompile 'com.google.code.gson:gson:2.8.0'
+    testCompile 'org.eclipse.jetty:jetty-server:9.4.5.v20170502'
+    testCompile 'com.fasterxml.jackson.core:jackson-databind:2.10.0'
+    testCompile 'org.slf4j:slf4j-simple:' + slf4jVersion
+    testCompile 'org.awaitility:awaitility-groovy:3.0.0'
+    testCompile 'com.github.javafaker:javafaker:0.13'
+
+    testCompile 'org.reactivestreams:reactive-streams-tck:' + reactiveStreamsVersion
+    testCompile "io.reactivex.rxjava2:rxjava:2.1.5"
+
+    testCompile 'org.testng:testng:6.1.1' // use for reactive streams test inheritance
+
+    testCompile 'org.openjdk.jmh:jmh-core:1.21'
+    testCompile 'org.openjdk.jmh:jmh-generator-annprocess:1.21'
+}
+
+
+task testng(type: Test) {
+    useTestNG()
+}
+check.dependsOn testng
+
+compileJava.source file("build/generated-src"), sourceSets.main.java
+
+generateGrammarSource {
+    includes = ['Graphql.g4']
+    maxHeapSize = "64m"
+    arguments += ["-visitor"]
+    outputDirectory = file("${project.buildDir}/generated-src/antlr/main/graphql/parser/antlr")
+}
+generateGrammarSource.inputs.dir('src/main/antlr')
+
+task sourcesJar(type: Jar) {
+    dependsOn classes
+    classifier 'sources'
+    from sourceSets.main.allSource
+}
+
+task javadocJar(type: Jar, dependsOn: javadoc) {
+    classifier = 'javadoc'
+    from javadoc.destinationDir
+}
+
+javadoc {
+    options.encoding = 'UTF-8'
+}
+
+artifacts {
+    archives sourcesJar
+    archives javadocJar
+}
+
+test {
+    testLogging {
+        exceptionFormat = 'full'
+    }
+}
+
+allprojects {
+    tasks.withType(Javadoc) {
+        exclude('**/antlr/**')
+    }
+
+
+}
+
+publishing {
+
+    publications {
+
+        graphqlJava(MavenPublication) {
+            version version
+            from components.java
+
+            artifact sourcesJar {
+                classifier "sources"
+            }
+            artifact javadocJar {
+                classifier "javadoc"
+            }
+            pom.withXml {
+                // The ANTLR-related code below--introduced in `1ac98bf`--addresses an issue with
+                // the Gradle ANTLR plugin. `1ac98bf` can be reverted and this comment removed once
+                // that issue is fixed and Gradle upgraded. See https://goo.gl/L92KiF and https://goo.gl/FY0PVR.
+                Node pomNode = asNode()
+                pomNode.dependencies.'*'.findAll() {
+                    it.artifactId.text() == 'antlr4'
+                }.each() {
+                    it.parent().remove(it)
+                }
+                pomNode.children().last() + {
+                    resolveStrategy = Closure.DELEGATE_FIRST
+                    name 'graphql-java'
+                    description 'GraphqL Java'
+                    url "https://github.com/graphql-java/graphql-java"
+                    scm {
+                        url "https://github.com/graphql-java/graphql-java"
+                        connection "https://github.com/graphql-java/graphql-java"
+                        developerConnection "https://github.com/graphql-java/graphql-java"
+                    }
+                    licenses {
+                        license {
+                            name 'MIT'
+                            url 'https://github.com/graphql-java/graphql-java/blob/master/LICENSE.md'
+                            distribution 'repo'
+                        }
+                    }
+                    developers {
+                        developer {
+                            id 'andimarek'
+                            name 'Andreas Marek'
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+bintray {
+    user = System.env.BINTRAY_USER ?: project["bintray.user"]
+    key = System.env.BINTRAY_API_KEY ?: project["bintray.key"]
+    publications = ['graphqlJava']
+    publish = true
+    pkg {
+        repo = 'graphql-java'
+        name = 'graphql-java'
+        desc = 'GraphQL in Java'
+        licenses = ['MIT']
+        vcsUrl = 'https://github.com/graphql-java/graphql-java'
+
+        version {
+            name = project.version
+            desc = project.description
+            released = new Date()
+            vcsTag = 'v' + project.version
+            gpg {
+                sign = true
+            }
+            mavenCentralSync {
+                sync = true
+                user = System.env.MAVEN_CENTRAL_USER
+                password = System.env.MAVEN_CENTRAL_PASSWORD
+                close = '1'
+            }
+        }
+    }
+}
+
+// all publish tasks depend on the build task
+tasks.withType(PublishToMavenRepository) {
+    dependsOn build
+}
+
+
+task wrapper(type: Wrapper) {
+    gradleVersion = '4.10.2'
+    distributionUrl = "https://services.gradle.org/distributions/gradle-${gradleVersion}-all.zip"
+}
